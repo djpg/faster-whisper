@@ -9,10 +9,13 @@ model_path = "large-v3"
 model = WhisperModel(model_path, device="cuda")
 
 
-def inference():
-    segments, info = model.transcribe("benchmark.m4a", language="fr")
-    for segment in segments:
-        print("[%.2fs -> %.2fs] %s" % (segment.start, segment.end, segment.text))
+def inference(audio_file: str="benchmark.m4a", lang: str="fr", print_output: bool=True):
+    segments, info = model.transcribe(audio_file, language=lang)
+    if print_output:
+        for segment in segments:
+            print("[%.2fs -> %.2fs] %s" % (segment.start, segment.end, segment.text))
+    else:
+        _ = list(segments)
 
 
 def get_logger(name: Optional[str] = None) -> logging.Logger:
