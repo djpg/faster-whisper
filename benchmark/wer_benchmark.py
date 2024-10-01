@@ -20,6 +20,7 @@ parser.add_argument(
 args = parser.parse_args()
 
 model_path = os.getenv("MODEL_PATH", "large-v3")
+lang = os.getenv("LANG", "en")
 compute_type = os.getenv("COMPUTE_TYPE", "default")
 model = WhisperModel(model_path, device="cuda", compute_type=compute_type)
 logging.info(f"model_path: {model_path} lang: {lang} compute_type: {compute_type}")
@@ -37,7 +38,7 @@ with open(os.path.join(os.path.dirname(__file__), "normalizer.json"), "r") as f:
 def inference(batch):
     batch["transcription"] = []
     for sample in batch["audio"]:
-        segments, info = model.transcribe(sample["array"], language="en")
+        segments, info = model.transcribe(sample["array"], language=lang)
         batch["transcription"].append("".join([segment.text for segment in segments]))
     batch["reference"] = batch["text"]
     return batch
