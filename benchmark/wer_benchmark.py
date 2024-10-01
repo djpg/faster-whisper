@@ -19,8 +19,10 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-model_path = "large-v3"
-model = WhisperModel(model_path, device="cuda")
+model_path = os.getenv("MODEL_PATH", "large-v3")
+compute_type = os.getenv("COMPUTE_TYPE", "default")
+model = WhisperModel(model_path, device="cuda", compute_type=compute_type)
+logging.info(f"model_path: {model_path} lang: {lang} compute_type: {compute_type}")
 
 # load the dataset with streaming mode
 dataset = load_dataset("librispeech_asr", "clean", split="validation", streaming=True)
