@@ -27,7 +27,7 @@ logging.info(f"model_path: {model_path} lang: {lang} compute_type: {compute_type
 
 # load the dataset with streaming mode
 # https://huggingface.co/datasets/openslr/librispeech_asr
-dataset = load_dataset("librispeech_asr", "clean", split="validation", streaming=True)
+dataset = load_dataset("librispeech_asr", "clean", split="validation", streaming=True, trust_remote_code=True)
 
 # define the evaluation metric
 wer_metric = load("wer")
