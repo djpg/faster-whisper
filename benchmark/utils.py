@@ -6,9 +6,9 @@ from typing import Optional
 
 from faster_whisper import WhisperModel
 
-AUDIOS = {"fr": "benchmark.m4a", "en": "benchmark_en.m4a"}
 model_path = os.getenv("MODEL_PATH", "large-v3")
 lang = os.getenv("LANG", "fr")
+audio_file = "benchmark.m4a" if lang == "fr" else f"benchmark_{lang}.m4a"
 compute_type = os.getenv("COMPUTE_TYPE", "default")
 model = WhisperModel(model_path, device="cuda", compute_type=compute_type)
 logging.info(f"model_path: {model_path} lang: {lang} compute_type: {compute_type}")
