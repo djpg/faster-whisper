@@ -1,6 +1,7 @@
 # pip install -U openai-whisper
 import os
 import time
+import logging
 
 import whisper
 
