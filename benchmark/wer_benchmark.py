@@ -26,6 +26,7 @@ model = WhisperModel(model_path, device="cuda", compute_type=compute_type)
 logging.info(f"model_path: {model_path} lang: {lang} compute_type: {compute_type}")
 
 # load the dataset with streaming mode
+# https://huggingface.co/datasets/openslr/librispeech_asr
 dataset = load_dataset("librispeech_asr", "clean", split="validation", streaming=True)
 
 # define the evaluation metric
