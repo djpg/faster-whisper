@@ -821,6 +821,7 @@ class WhisperModel:
         hotwords: Optional[str] = None,
         language_detection_threshold: float = 0.5,
         language_detection_segments: int = 1,
+        language_reuse_margin: Optional[float] = None,
     ) -> Tuple[Iterable[Segment], TranscriptionInfo]:
         """Transcribes an input file.
 
@@ -893,12 +894,19 @@ class WhisperModel:
           language_detection_threshold: If the maximum probability of the language tokens is higher
            than this value, the language is detected.
           language_detection_segments: Number of segments to consider for the language detection.
+          language_reuse_margin: Opt-in minimum top-two LID probability margin in [0, 1]
+            for sharing the short-audio ASR encoder with language detection. None preserves
+            legacy LID inputs. Low-confidence inputs fall back to legacy LID while retaining
+            the ASR encoder. Accepted inputs may have different LID probabilities or labels.
         Returns:
           A tuple with:
 
             - a generator over transcribed segments
             - an instance of TranscriptionInfo
         """
+        if language_reuse_margin is not None and not 0 <= language_reuse_margin <= 1:
+            raise ValueError("language_reuse_margin must be in [0, 1] or None")
+
         sampling_rate = self.feature_extractor.sampling_rate
 
         if multilingual and not self.model.is_multilingual:
@@ -971,35 +979,67 @@ class WhisperModel:
                     if start_timestamp * self.frames_per_second < content_frames
                     else 0
                 )
-                # Detect language on the same padded first window as ASR.
-                # Short inputs contain an extra terminal Mel frame in LID.
-                # Keep legacy LID behavior for empty audio and custom clips.
-                lid_features = features[..., seek:]
-                reuse_first_encoder = False
-                if clip_timestamps == "0" and content_frames > 0:
-                    if content_frames < self.feature_extractor.nb_max_frames:
-                        lid_features = features[..., :content_frames]
-                    reuse_first_encoder = True
-
-                if reuse_first_encoder:
+                max_frames = self.feature_extractor.nb_max_frames
+                standard_window = clip_timestamps == "0" and content_frames > 0
+                legacy_features = features[..., seek:]
+                same_window = standard_window and (
+                    content_frames >= max_frames
+                    or np.array_equal(
+                        pad_or_trim(features[..., :max_frames]),
+                        pad_or_trim(features[..., :content_frames]),
+                    )
+                )
+                if same_window:
                     (
                         language,
                         language_probability,
                         all_language_probs,
                         encoder_output,
                     ) = self._detect_language_from_features(
-                        lid_features,
+                        legacy_features,
                         language_detection_segments,
                         language_detection_threshold,
                         reuse_first_encoder=True,
                     )
+                elif (
+                    standard_window
+                    and language_reuse_margin is not None
+                    and language_detection_segments > 0
+                    and content_frames < max_frames
+                    # The legacy terminal frame must not create a second LID window.
+                    and legacy_features.shape[-1] <= max_frames
+                ):
+                    (
+                        language,
+                        language_probability,
+                        all_language_probs,
+                        encoder_output,
+                    ) = self._detect_language_from_features(
+                        features[..., :content_frames],
+                        language_detection_segments,
+                        language_detection_threshold,
+                        reuse_first_encoder=True,
+                    )
+                    if not _accept_language_reuse(
+                        all_language_probs, language_reuse_margin
+                    ):
+                        # Keep the ASR encoder; only recompute legacy LID.
+                        (
+                            language,
+                            language_probability,
+                            all_language_probs,
+                        ) = self.detect_language(
+                            features=legacy_features,
+                            language_detection_segments=language_detection_segments,
+                            language_detection_threshold=language_detection_threshold,
+                        )
                 else:
                     (
                         language,
                         language_probability,
                         all_language_probs,
                     ) = self.detect_language(
-                        features=features[..., seek:],
+                        features=legacy_features,
                         language_detection_segments=language_detection_segments,
                         language_detection_threshold=language_detection_threshold,
                     )
@@ -1928,6 +1968,17 @@ class WhisperModel:
             all_language_probs,
             first_encoder_output,
         )
+
+
+def _accept_language_reuse(probabilities, margin: float) -> bool:
+    """Accept only a finite, unambiguous top-two margin from the ASR input."""
+    if not probabilities or len(probabilities) < 2:
+        return False
+    scores = sorted((p for _, p in probabilities), reverse=True)
+    if not all(np.isfinite(p) and 0 <= p <= 1 for p in scores):
+        return False
+    difference = scores[0] - scores[1]
+    return difference > 0 and difference >= margin
 
 
 def restore_speech_timestamps(
