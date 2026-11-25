@@ -10,6 +10,7 @@ import io
 import json
 import os
 import random
+import re
 import statistics
 
 from huggingface_hub import HfApi, hf_hub_download
@@ -66,11 +67,26 @@ def discover():
 def plan():
     shards = discover()
     locales = list(shards)
-    revisions = {name: HfApi().model_info(repo).sha for name, repo in MODELS.items()}
+    # Keep model weights identical to the original full benchmark run.
+    revisions = {"tiny": "d90ca5fe260221311c53c58e660288d3deb8d356",
+                 "small": "536b0662742c02347bc0e980a01041f333bce120"}
     matrix = {"include": [
         {"shard": i // 3 + 1, "locales": ",".join(locales[i:i + 3])}
         for i in range(0, len(locales), 3)
     ]}
+    requested = os.environ.get("FLEURS_SHARDS", "").strip()
+    if not requested:
+        match = re.search(r"\[shards:([0-9, ]+)\]",
+                          os.environ.get("FLEURS_COMMIT_MESSAGE", ""))
+        if match:
+            requested = match.group(1)
+    if requested:
+        selected = {int(x.strip()) for x in requested.split(",")}
+        available = {entry["shard"] for entry in matrix["include"]}
+        if not selected or not selected <= available:
+            raise ValueError(f"Invalid shard IDs: {selected - available}")
+        matrix["include"] = [entry for entry in matrix["include"]
+                             if entry["shard"] in selected]
     emit({"kind": "plan", "dataset_revision": REVISION, "locales": locales,
           "model_revisions": revisions, "matrix": matrix,
           "af_za_sources": shards["af_za"]})
@@ -105,8 +121,13 @@ def samples_for_locale(config, paths, count, seed):
             break
     emit({"kind": "selection", "config": config, "seed": seed,
           "available_rows": len(table), "selected": len(samples), "requested": count})
-    if len(samples) != count:
-        raise RuntimeError(f"{config}: only {len(samples)} eligible of {count}")
+    if not samples:
+        raise RuntimeError(f"{config}: no eligible test samples")
+    if len(samples) < count:
+        emit({"kind": "sample_shortfall", "config": config,
+              "selected": len(samples), "requested": count,
+              "missing": count - len(samples),
+              "policy": "all eligible rows, no replacement"})
     return samples
 
 
@@ -212,7 +233,12 @@ def evaluate(args):
                 emit({"kind": "fleurs_sample", "model": name, "config": config, **result})
             summary(name, config, expected, supported, rows)
         del original, optimized
-    emit({"kind": "complete", "configs": configs, "pairs": len(configs) * args.samples * len(MODELS)})
+    actual = {config: len(samples[config]) for config in configs}
+    emit({"kind": "complete", "configs": configs, "samples_by_config": actual,
+          "requested_per_config": args.samples,
+          "unique_rows": sum(actual.values()),
+          "pairs": sum(actual.values()) * len(MODELS),
+          "transcriptions": sum(actual.values()) * len(MODELS) * 2})
 
 
 if __name__ == "__main__":
