@@ -971,17 +971,15 @@ class WhisperModel:
                     if start_timestamp * self.frames_per_second < content_frames
                     else 0
                 )
-                # Only reuse the encoder when LID and ASR see identical inputs.
-                # LID includes the last feature frame, while ASR excludes it.
-                # Custom clips may also shorten or shift the first ASR window.
+                # Detect language on the same padded first window as ASR.
+                # Short inputs contain an extra terminal Mel frame in LID.
+                # Keep legacy LID behavior for empty audio and custom clips.
+                lid_features = features[..., seek:]
                 reuse_first_encoder = False
                 if clip_timestamps == "0" and content_frames > 0:
-                    max_frames = self.feature_extractor.nb_max_frames
-                    lid_window = pad_or_trim(features[..., :max_frames])
-                    asr_window = pad_or_trim(
-                        features[..., : min(content_frames, max_frames)]
-                    )
-                    reuse_first_encoder = np.array_equal(lid_window, asr_window)
+                    if content_frames < self.feature_extractor.nb_max_frames:
+                        lid_features = features[..., :content_frames]
+                    reuse_first_encoder = True
 
                 if reuse_first_encoder:
                     (
@@ -990,7 +988,7 @@ class WhisperModel:
                         all_language_probs,
                         encoder_output,
                     ) = self._detect_language_from_features(
-                        features[..., seek:],
+                        lid_features,
                         language_detection_segments,
                         language_detection_threshold,
                         reuse_first_encoder=True,
