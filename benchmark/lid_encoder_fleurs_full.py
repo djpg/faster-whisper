@@ -96,6 +96,8 @@ def plan():
 
 
 def samples_for_locale(config, paths, count, seed):
+    if count < 1:
+        raise ValueError("Requested sample count must be positive")
     tables = []
     for revision, shard in paths:
         path = hf_hub_download(DATASET, shard, repo_type="dataset", revision=revision)
