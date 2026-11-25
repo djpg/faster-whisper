@@ -971,15 +971,40 @@ class WhisperModel:
                     if start_timestamp * self.frames_per_second < content_frames
                     else 0
                 )
-                (
-                    language,
-                    language_probability,
-                    all_language_probs,
-                ) = self.detect_language(
-                    features=features[..., seek:],
-                    language_detection_segments=language_detection_segments,
-                    language_detection_threshold=language_detection_threshold,
-                )
+                # Only reuse the encoder when LID and ASR see identical inputs.
+                # LID includes the last feature frame, while ASR excludes it.
+                # Custom clips may also shorten or shift the first ASR window.
+                reuse_first_encoder = False
+                if clip_timestamps == "0" and content_frames > 0:
+                    max_frames = self.feature_extractor.nb_max_frames
+                    lid_window = pad_or_trim(features[..., :max_frames])
+                    asr_window = pad_or_trim(
+                        features[..., : min(content_frames, max_frames)]
+                    )
+                    reuse_first_encoder = np.array_equal(lid_window, asr_window)
+
+                if reuse_first_encoder:
+                    (
+                        language,
+                        language_probability,
+                        all_language_probs,
+                        encoder_output,
+                    ) = self._detect_language_from_features(
+                        features[..., seek:],
+                        language_detection_segments,
+                        language_detection_threshold,
+                        reuse_first_encoder=True,
+                    )
+                else:
+                    (
+                        language,
+                        language_probability,
+                        all_language_probs,
+                    ) = self.detect_language(
+                        features=features[..., seek:],
+                        language_detection_segments=language_detection_segments,
+                        language_detection_threshold=language_detection_threshold,
+                    )
 
                 self.logger.info(
                     "Detected language '%s' with probability %.2f",
@@ -1854,15 +1879,32 @@ class WhisperModel:
             ]
             features = self.feature_extractor(audio)
 
+        language, language_probability, all_language_probs, _ = (
+            self._detect_language_from_features(
+                features, language_detection_segments, language_detection_threshold
+            )
+        )
+        return language, language_probability, all_language_probs
+
+    def _detect_language_from_features(
+        self,
+        features: np.ndarray,
+        language_detection_segments: int,
+        language_detection_threshold: float,
+        reuse_first_encoder: bool = False,
+    ):
         features = features[
             ..., : language_detection_segments * self.feature_extractor.nb_max_frames
         ]
 
+        first_encoder_output = None
         detected_language_info = {}
         for i in range(0, features.shape[-1], self.feature_extractor.nb_max_frames):
             encoder_output = self.encode(
                 pad_or_trim(features[..., i : i + self.feature_extractor.nb_max_frames])
             )
+            if i == 0 and reuse_first_encoder:
+                first_encoder_output = encoder_output
             # results is a list of tuple[str, float] with language names and probabilities.
             results = self.model.detect_language(encoder_output)[0]
 
@@ -1882,7 +1924,12 @@ class WhisperModel:
             )
             language_probability = max(detected_language_info[language])
 
-        return language, language_probability, all_language_probs
+        return (
+            language,
+            language_probability,
+            all_language_probs,
+            first_encoder_output,
+        )
 
 
 def restore_speech_timestamps(
