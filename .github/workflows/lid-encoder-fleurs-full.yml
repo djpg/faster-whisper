@@ -44,6 +44,19 @@ jobs:
           FLEURS_SHARDS: ${{ inputs.shards || '' }}
           FLEURS_COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
         run: python benchmark/lid_encoder_fleurs_full.py --plan
+      - name: Record selected shards in run summary
+        env:
+          SELECTED_MATRIX: ${{ steps.plan.outputs.matrix }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          matrix = json.loads(os.environ["SELECTED_MATRIX"])
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              print("### Selected FLEURS shards", file=f)
+              for entry in matrix["include"]:
+                  print(f"- {entry['shard']}: {entry['locales']}", file=f)
+          PY
 
   evaluate:
     needs: plan
