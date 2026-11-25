@@ -16,7 +16,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [speed, quality]
+        # Allow a loader-only repair to run quality without repeating speed.
+        mode: ${{ fromJSON(github.event_name == 'push' && contains(github.event.head_commit.message, '[quality-only]') && '["quality"]' || '["speed","quality"]') }}
     env:
       OMP_NUM_THREADS: "4"
       OPENBLAS_NUM_THREADS: "1"

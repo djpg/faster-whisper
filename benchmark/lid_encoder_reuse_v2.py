@@ -87,28 +87,42 @@ def load_fleurs(count):
     import pyarrow.parquet as pq
     from huggingface_hub import HfApi, hf_hub_download
 
-    revision = HfApi().dataset_info("google/fleurs").sha
-    emit({"kind": "dataset", "dataset": "google/fleurs", "revision": revision,
-          "split": "test", "per_language": count})
+    dataset = "google/fleurs"
+    api = HfApi()
+    parquet_ref = "refs/convert/parquet"
+    revision = api.dataset_info(dataset, revision=parquet_ref).sha
+    files = api.list_repo_files(dataset, repo_type="dataset", revision=revision)
+    emit({"kind": "dataset", "dataset": dataset, "ref": parquet_ref,
+          "revision": revision, "split": "test", "per_language": count})
     samples = []
     for config, language in (
         ("en_us", "en"), ("es_419", "es"), ("fr_fr", "fr"),
         ("de_de", "de"), ("ar_eg", "ar"),
     ):
-        path = hf_hub_download(
-            "google/fleurs", f"{config}/test-00000-of-00001.parquet",
-            repo_type="dataset", revision=revision
-        )
+        # Discover the actual test shards rather than guessing their names.
+        prefix = f"{config}/test/"
+        shards = sorted(p for p in files
+                        if p.startswith(prefix) and p.endswith(".parquet"))
+        if not shards:
+            raise RuntimeError(
+                f"No test parquet shards for {config} at {revision}"
+            )
         selected = 0
-        for batch in pq.ParquetFile(path).iter_batches(
-            batch_size=16, columns=["id", "audio", "transcription"]
-        ):
-            for item in batch.to_pylist():
-                audio = decode_audio(io.BytesIO(item["audio"]["bytes"]))
-                if not 0 < len(audio) < 30 * 16000 or not normalize(item["transcription"]):
-                    continue
-                samples.append((config, language, item["id"], audio, item["transcription"]))
-                selected += 1
+        for shard in shards:
+            emit({"kind": "dataset_shard", "config": config, "path": shard})
+            path = hf_hub_download(dataset, shard, repo_type="dataset",
+                                   revision=revision)
+            for batch in pq.ParquetFile(path).iter_batches(
+                batch_size=16, columns=["id", "audio", "transcription"]
+            ):
+                for item in batch.to_pylist():
+                    audio = decode_audio(io.BytesIO(item["audio"]["bytes"]))
+                    if not 0 < len(audio) < 30 * 16000 or not normalize(item["transcription"]):
+                        continue
+                    samples.append((config, language, item["id"], audio, item["transcription"]))
+                    selected += 1
+                    if selected == count:
+                        break
                 if selected == count:
                     break
             if selected == count:
