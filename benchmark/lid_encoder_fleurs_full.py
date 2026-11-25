@@ -34,27 +34,46 @@ def emit(row):
 
 
 def discover():
-    files = HfApi().list_repo_files(DATASET, repo_type="dataset", revision=REVISION)
+    api = HfApi()
+    files = api.list_repo_files(DATASET, repo_type="dataset", revision=REVISION)
     shards = {}
     for path in files:
         parts = path.split("/")
-        if len(parts) >= 3 and parts[1] == "test" and path.endswith(".parquet"):
-            if parts[0] != "all":
-                shards.setdefault(parts[0], []).append(path)
+        if len(parts) < 2 or not path.endswith(".parquet") or parts[0] == "all":
+            continue
+        # Converted datasets can use either config/test/0000.parquet
+        # or config/test-00000-of-00001.parquet.
+        if ((len(parts) >= 3 and parts[1] == "test")
+                or (len(parts) == 2 and parts[1].startswith("test-"))):
+            shards.setdefault(parts[0], []).append((REVISION, path))
+
+    # The pinned conversion snapshot has 101 discovered locales. Use a
+    # separately pinned, published Afrikaans test shard if it is absent.
+    if "af_za" not in shards:
+        af_revision = "8e74c3a7c16ffd851ceb9d50012daa64122d6734"
+        af_files = api.list_repo_files(DATASET, repo_type="dataset", revision=af_revision)
+        af_paths = sorted(p for p in af_files
+                          if p.startswith("af_za/test-") and p.endswith(".parquet"))
+        if not af_paths:
+            raise RuntimeError(f"No Afrikaans test files at {af_revision}")
+        shards["af_za"] = [(af_revision, p) for p in af_paths]
+
     if len(shards) != 102:
         raise RuntimeError(f"Expected 102 test locales, got {len(shards)}: {sorted(shards)}")
     return {k: sorted(v) for k, v in sorted(shards.items())}
 
 
 def plan():
-    locales = list(discover())
+    shards = discover()
+    locales = list(shards)
     revisions = {name: HfApi().model_info(repo).sha for name, repo in MODELS.items()}
     matrix = {"include": [
         {"shard": i // 3 + 1, "locales": ",".join(locales[i:i + 3])}
         for i in range(0, len(locales), 3)
     ]}
     emit({"kind": "plan", "dataset_revision": REVISION, "locales": locales,
-          "model_revisions": revisions, "matrix": matrix})
+          "model_revisions": revisions, "matrix": matrix,
+          "af_za_sources": shards["af_za"]})
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
         f.write("matrix=" + json.dumps(matrix, separators=(",", ":")) + "\n")
         f.write("revisions=" + json.dumps(revisions, separators=(",", ":")) + "\n")
@@ -62,11 +81,12 @@ def plan():
 
 def samples_for_locale(config, paths, count, seed):
     tables = []
-    for shard in paths:
-        path = hf_hub_download(DATASET, shard, repo_type="dataset", revision=REVISION)
+    for revision, shard in paths:
+        path = hf_hub_download(DATASET, shard, repo_type="dataset", revision=revision)
         table = pq.read_table(path, columns=["id", "audio", "transcription"])
         # Preserve the source shard and row index for reproducibility.
         table = table.append_column("source_shard", pa.array([shard] * len(table)))
+        table = table.append_column("source_revision", pa.array([revision] * len(table)))
         table = table.append_column("source_row", pa.array(range(len(table))))
         tables.append(table)
     table = pa.concat_tables(tables)
@@ -113,7 +133,8 @@ def score_pair(original, optimized, config, row, audio, index, expected, support
     margin = old_probs[0][1] - old_probs[1][1] if len(old_probs) > 1 else None
     return {
         "id": row["id"], "source_shard": row["source_shard"],
-        "source_row": row["source_row"], "duration_s": len(audio) / 16000,
+        "source_row": row["source_row"], "source_revision": row["source_revision"],
+        "duration_s": len(audio) / 16000,
         "reference_words": len(words), "reference_chars": len(chars),
         "word_errors": [edits(words, h.split()) for h in hypotheses],
         "char_errors": [edits(chars, h.replace(" ", "")) for h in hypotheses],
